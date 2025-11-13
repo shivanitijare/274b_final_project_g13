@@ -5,7 +5,18 @@ class BankingSystem(ABC):
     """
     `BankingSystem` interface.
     """
-
+    
+    def __init__(self, accounts_dic: dict):
+      """
+      Create accounts dictionary to store all accounts with their id and information
+      
+      Args:
+          accounts_dic (dict): 
+      """
+      self.accounts: dict = {}      
+      
+      
+      
     def create_account(self, timestamp: int, account_id: str) -> bool:
         """
         Should create a new account with the given identifier if it
@@ -14,7 +25,19 @@ class BankingSystem(ABC):
         `False` if an account with `account_id` already exists.
         """
         # default implementation
-        return False
+        if account_id in self.accounts:
+            return False
+        else:
+          # create a new account information first (default set of balance = 0 and empty transaction)
+            account_info = {'balance': 0,
+                            'transactions': []}
+            account_info['transactions'].append({'timestamp': timestamp,
+                                                 'operation': 'created account',
+                                                 'amount': 0}) #should specify type?
+            
+            # add new account information with key of account_id to accounts dictionary
+            self.accounts[account_id] = account_info      #create a new account
+            return True
 
     def deposit(self, timestamp: int, account_id: str, amount: int) -> int | None:
         """
@@ -26,7 +49,16 @@ class BankingSystem(ABC):
         `None`.
         """
         # default implementation
-        return None
+        if account_id in self.accounts:
+            account_info = self.accounts[account_id]
+            
+            account_info['transactions'].append({'timestamp': timestamp,
+                                                 'operation': 'deposited',
+                                                 'amount': amount})
+            account_info['balance'] += amount
+        else:
+            return None
+        return account_info['balance']
 
     def transfer(self, timestamp: int, source_account_id: str, target_account_id: str, amount: int) -> int | None:
         """
@@ -42,7 +74,28 @@ class BankingSystem(ABC):
           insufficient funds to perform the transfer.
         """
         # default implementation
-        return None
+        if source_account_id not in self.accounts or target_account_id not in self.accounts:
+            return None
+        if source_account_id == target_account_id: #elif or if ?
+            return None
+        if self.accounts[source_account_id]['balance'] < amount:
+            return None
+        else:
+          # source account
+          account_info_source = self.accounts[source_account_id]
+          account_info_source['transactions'].append({'timestamp': timestamp,
+                                                 'operation': 'transferred out',
+                                                 'amount': amount})
+          account_info_source['balance'] -= amount
+          
+          # target account
+          account_info_target = self.accounts[target_account_id]
+          account_info_target['transactions'].append({'timestamp': timestamp,
+                                                 'operation': 'transferred in',
+                                                 'amount': amount})
+          account_info_target['balance'] += amount
+          
+        return account_info_source['balance']
 
     def top_spenders(self, timestamp: int, n: int) -> list[str]:
         """
@@ -63,7 +116,23 @@ class BankingSystem(ABC):
           outgoing transactions.
         """
         # default implementation
-        return []
+        spender_sum = {}
+        for account_id, account_info in self.accounts.items():
+            for indiv_trans in account_info['transactions']: # indiv_trans = [ {}, {}, {}... ]
+                if indiv_trans['operation'] == 'transferred out':
+                    spender_sum[account_id] += indiv_trans['amount']
+                #if indiv_trans['operation'] == 'paid':
+                    #spender_sum[account_id] += indiv_trans['amount']
+        
+        # ascending order
+        sorted_spender_sum = sorted(spender_sum.items(), key=lambda item: item[1])
+        
+        if len(sorted_spender_sum) < n:
+          return sorted_spender_sum
+        #if Cashback
+        
+
+        return sorted_spender_sum[:n]
 
     def pay(self, timestamp: int, account_id: str, amount: int) -> str | None:
         """
