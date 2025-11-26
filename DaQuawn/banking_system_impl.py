@@ -268,7 +268,7 @@ class BankingSystemImpl(BankingSystem):
                 transaction['operation'] == 'cashback'
                 and transaction['payment'] == payment
             ):
-                # 'deposited' flag tells us if cashback has been applied
+                # check if cashback has been deposited, if not, deposit it
                 if transaction['deposited'] is True:
                     return 'CASHBACK_RECEIVED'
                 else:
