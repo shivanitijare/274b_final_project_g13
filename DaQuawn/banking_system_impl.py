@@ -41,10 +41,16 @@ class BankingSystemImpl(BankingSystem):
         │        └── transaction dict:
         │             ├── "timestamp": int
         │             ├── "operation": str
-        │             └── "amount": int
+        │             ├── "amount": int     
+        |             ├── "payment": str    # only in payback transactions, stores the unique payment number (num_payment) generated in pay()
+        │             └── "deposited": bool     # only in payback transactions, tracks if cashback has deposited or not
         '''
 
         self.MILLISECONDS_IN_1_DAY = 86400000 # number of seconds in 1 day (24 hours)
+
+        # store merged-away accounts for historical get_balance()
+        # key: account_id -> value: {"account_info": ..., "merged_at": timestamp}
+        self.archived_accounts: dict = {}
 
     def _process_cashbacks(self, timestamp: int) -> None:
         """
@@ -73,7 +79,9 @@ class BankingSystemImpl(BankingSystem):
         
         # Initialize a new account with balance of 0 and an empty transaction list
         account_info = {'balance': 0,
-                        'transactions': []}
+                        'transactions': [],
+                        'created_at': timestamp
+                        }
         
         # Record the "created account" tranactionn 
         account_info['transactions'].append({'timestamp': timestamp,
@@ -274,4 +282,126 @@ class BankingSystemImpl(BankingSystem):
                 else:
                     return 'IN_PROGRESS'
     
+    def merge_accounts(self, 
+                       timestamp, 
+                       account_id_1, 
+                       account_id_2) -> bool:
+        
+        self._process_cashbacks(timestamp)
+        import copy
 
+        # checking if the accounts are the same. 
+        if account_id_1 == account_id_2:
+            return False
+        
+        # checking if both accounts exist.
+        if account_id_1 not in self.whole_accounts or account_id_2 not in self.whole_accounts:
+            return False
+        
+        acct1 = self.whole_accounts[account_id_1]
+        acct2 = self.whole_accounts[account_id_2]
+
+        # Archive donor for historical get_balance()
+        archived_info = copy.deepcopy(acct2)
+        self.archived_accounts[account_id_2] = {
+                                                    "account_info": archived_info,
+                                                    "merged_at": timestamp,
+                                                }
+
+        # Copy acct2's transactions into acct1, tagging them
+        merged_transactions = []
+        for transaction in acct2["transactions"]:
+            new_tx = transaction.copy()
+            new_tx["merged_from"] = account_id_2
+            new_tx["merged_at"] = timestamp
+            merged_transactions.append(new_tx)
+        
+        acct1['transactions'].extend(merged_transactions)
+
+        # adding acct2 balance to acct1 balance
+        acct1['balance'] += acct2['balance']
+
+        # dropping acct2 from whole_accts
+        self.whole_accounts.pop(account_id_2)
+
+        # sorting acct1 by timestamp
+        acct1['transactions'].sort(key=lambda d: d['timestamp'])
+
+        return True
+    
+    def get_balance(self, 
+                    timestamp, 
+                    account_id, 
+                    time_at)-> int |None:
+        
+        self._process_cashbacks(time_at)
+
+        # Determine whether this ID refers to an active and/or archived account
+        active_info = self.whole_accounts.get(account_id)
+        archived_bundle = self.archived_accounts.get(account_id)
+
+        account_info = None
+        merged_at = None
+        is_archived = False
+        
+        # checking if account exists
+        if active_info is None and archived_bundle is None:
+            return None
+
+        if active_info is not None and archived_bundle is not None:
+            # ID was reused: choose which incarnation to use based on time_at
+            active_created_at = active_info.get("created_at", -1)
+            archived_merged_at = archived_bundle["merged_at"]
+
+            if time_at < active_created_at:
+                # Before the new account was (re)created: use old (archived) account
+                account_info = archived_bundle["account_info"]
+                merged_at = archived_merged_at
+                is_archived = True
+            else:
+                # After new account exists: use active one
+                account_info = active_info
+        elif active_info is not None:
+            account_info = active_info
+        else:
+            # Only archived version exists
+            account_info = archived_bundle["account_info"]
+            merged_at = archived_bundle["merged_at"]
+            is_archived = True
+
+        # If this is an archived (merged-away) account and time_at is at or after merge,
+        # the account no longer exists
+        if is_archived and time_at >= merged_at:
+            return None
+
+        # Check if account had been created by time_at
+        created_at = account_info.get("created_at", None)
+        if created_at is not None and created_at > time_at:
+            return None
+
+        balance_at_time = 0
+        add_to_balance = ["cashback", "deposited", "transferred in"]
+
+        for transaction in account_info["transactions"]:
+            tx_time = transaction["timestamp"]
+            if tx_time > time_at:
+                continue
+
+            # If this transaction came from a merge, it should *only* count
+            # starting at its merged_at time for the receiving account.
+            tx_merged_at = transaction.get("merged_at")
+            if tx_merged_at is not None and time_at < tx_merged_at:
+                # At this time, it still belonged to the original account
+                continue
+
+            operation = transaction['operation']
+            amount = transaction['amount']
+
+            if operation in add_to_balance:
+                balance_at_time += amount
+            elif operation == 'transferred out':
+                balance_at_time -= amount
+            elif operation.startswith('payment'):
+                balance_at_time -= amount
+        
+        return balance_at_time
