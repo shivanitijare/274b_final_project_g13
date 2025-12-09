@@ -1,172 +1,273 @@
 from banking_system import BankingSystem
-from typing import Dict
-
-#for timestamp purposes
-milliseconds_to_day = 24 * 60 * 60 * 1000
 
 class BankingSystemImpl(BankingSystem):
-     """
-    Level 1 implementation:
-      - create_account
-      - deposit
-      - transfer
-    Notes:
-      * Timestamps are accepted but not used for Level 1 logic.
-      * Balances are stored as non-negative integers.
-    """
-     def __init__(self) -> None:
-        self._balances: Dict[str, int] = {} #current balance of the account (maps account_id)
-        self._outgoing_total: Dict[str, int] = {} #total amount account has sent out (maps account_id)
+    def __init__(self) -> None:
+        # Key: account_id
+        # Value: dict { 
+        #    "balance": int, 
+        #    "transactions": list, 
+        #    "creation_time": int,
+        #    "merged_at": int (optional, if present, account is merged)
+        # }
+        self.accounts = {}
+        self.payment_counter = 1
+        self.MILLISECONDS_IN_1_DAY = 86400000
 
-        # Level 3
-        self._next_payment_id: int = 0               # global counter for "paymentX"
-        self._payments: Dict[str, Dict] = {}         # payment_id -> info dict
-        # cashback_timestamp -> list of payment_ids whose cashback should be processed then
-        self._cashback_schedule: Dict[int, list[str]] = {}
-        self._last_processed_ts: int = 0             # last timestamp up to which cashback was processed
-    
-    #helper method
-     def _process_cashbacks(self, timestamp: int) -> None:
-         """
-         Apply all cashbacks whose scheduled time is <= current timestamp,
-         ensuring they are applied before any work done at this timestamp.
-        """
-         if not self._cashback_schedule:
-             self._last_processed_ts = max(self._last_processed_ts, timestamp)
-             return
-         due_times = [ts for ts in self._cashback_schedule.keys()
-                 if self._last_processed_ts < ts <= timestamp]
-         if not due_times:
-             self._last_processed_ts = max(self._last_processed_ts, timestamp)
-             return
-         for ts in sorted(due_times):
-            for payment_id in self._cashback_schedule[ts]:
-                info = self._payments.get(payment_id)
-                if info is None or info["status"] != "IN_PROGRESS":
-                    continue
-                acc_id = info["account_id"]
-                cashback = info["cashback"]
-                    # refund cashback first
-                self._balances[acc_id] += cashback
-                info["status"] = "CASHBACK_RECEIVED"
-            del self._cashback_schedule[ts]
-         self._last_processed_ts = max(self._last_processed_ts, timestamp)
-   
-   # time complexity of O(1)
-     def create_account(self, timestamp: int, account_id: str) -> bool:
-        #level 3
-        self._process_cashbacks(timestamp)
+    def _process_cashbacks(self, timestamp: int) -> None:
+        for acc in self.accounts.values():
+            # Even if merged, the prompt implies cashback refunds for merged accounts 
+            # should be processed but refunded to the survivor.
+            # However, my merge logic moves transactions to the survivor, 
+            # so the survivor handles the cashback processing naturally.
+            # We only need to process active accounts here for unmerged scenarios.
+            if "merged_at" in acc:
+                continue
+                
+            for tr in acc["transactions"]:
+                if (tr["operation"] == "cashback" 
+                    and tr["timestamp"] <= timestamp 
+                    and not tr["deposited"]):
+                    
+                    acc["balance"] += tr["amount"]
+                    tr["deposited"] = True
+
+    def create_account(self, timestamp: int, account_id: str) -> bool:
+        if account_id in self.accounts:
+            # If account exists and is ACTIVE, fail.
+            if "merged_at" not in self.accounts[account_id]:
+                return False
+            # If account exists but was MERGED (soft deleted), 
+            # we overwrite it (effectively creating a new account with the same ID).
         
-        if account_id in self._balances:
-            return False
-        self._balances[account_id] = 0
-        self._outgoing_total[account_id] = 0
+        self.accounts[account_id] = {
+            "balance": 0,
+            "transactions": [],
+            "creation_time": timestamp
+        }
         return True
 
-    # time complexity of O(1)
-     def deposit(self, timestamp: int, account_id: str, amount: int) -> int | None: 
-        #level 3
+    def deposit(self, timestamp: int, account_id: str, amount: int) -> int | None:
         self._process_cashbacks(timestamp)
         
-        balance = self._balances.get(account_id) #looks up the balance in the account
-        if balance is None: #when account does not exist
+        if account_id not in self.accounts:
             return None
-        # Assuming non-negative amounts
-        balance += amount
-        self._balances[account_id] = balance
-        return balance
-
-    # time complexity of O(1)
-     def transfer(self, timestamp: int, source_account_id: str, target_account_id: str, amount: int) -> int | None:
-        #level 3
-        self._process_cashbacks(timestamp)
-       
-       #checking if the accounts exisit, and making sure they are not the same account
-        if (
-            source_account_id not in self._balances
-            or target_account_id not in self._balances
-            or source_account_id == target_account_id
-        ): 
-            return None
-        #sournce account does not have sufficient funds, the transfer will not happen
-        if self._balances[source_account_id] < amount:
-            return None
-
-        #performing the transfer (subtract from source and add to target)
-        self._balances[source_account_id] -= amount
-        self._balances[target_account_id] += amount
-
-        # added this for Level 2 to help with top_spenders function
-        self._outgoing_total[source_account_id] += amount
         
-        return self._balances[source_account_id]
+        acc = self.accounts[account_id]
+        if "merged_at" in acc:
+            return None
+            
+        acc["balance"] += amount
+        acc["transactions"].append({
+            "timestamp": timestamp,
+            "operation": "deposit",
+            "amount": amount
+        })
+        return acc["balance"]
 
-    # Level 2
-     def top_spenders(self, timestamp: int, n: int) -> list[str]:
-        #level 3
+    def transfer(self, timestamp: int, source_account_id: str, target_account_id: str, amount: int) -> int | None:
         self._process_cashbacks(timestamp)
         
-        #list of tuples to have acount ID and the total outgoing ammount
-        top_accounts = []
-        for acc_id in self._balances.keys():
-            total_outgoing = self._outgoing_total.get(acc_id, 0) #get 0 if account id is not in outgoing_total
-            tuple_pair = (acc_id, total_outgoing)
-            top_accounts.append(tuple_pair)
-
-        #sorts the higher outgoing total first
-        top_accounts.sort(key=lambda item: (-item[1], item[0]))
-
-        #slices to keep top n entries
-        top_accounts = top_accounts[:n]
-
-        return [f"{acc_id}({total})" for acc_id, total in top_accounts]
-    
-    #Level 3
-     def pay(self, timestamp: int, account_id: str, amount: int) -> str | None:
-        self._process_cashbacks(timestamp)
-
-        if account_id not in self._balances:
+        if (source_account_id not in self.accounts or 
+            target_account_id not in self.accounts or 
+            source_account_id == target_account_id):
             return None
-        if self._balances[account_id] < amount:
+            
+        src = self.accounts[source_account_id]
+        tgt = self.accounts[target_account_id]
+        
+        # Check if either is merged
+        if "merged_at" in src or "merged_at" in tgt:
             return None
-
-        # withdraw now
-        self._balances[account_id] -= amount
-        # payments also count as outgoing
-        self._outgoing_total[account_id] += amount
-
-        # create payment id
-        self._next_payment_id += 1
-        payment_id = f"payment{self._next_payment_id}"
-
-        # compute cashback (2% rounded down)
-        cashback = (amount * 2) // 100
-        cashback_ts = timestamp + milliseconds_to_day
-
-        # record payment info
-        self._payments[payment_id] = {
-            "account_id": account_id,
+        
+        if src["balance"] < amount:
+            return None
+        
+        src["balance"] -= amount
+        tgt["balance"] += amount
+        
+        src["transactions"].append({
+            "timestamp": timestamp,
+            "operation": "transfer_out",
             "amount": amount,
-            "cashback": cashback,
-            "cashback_ts": cashback_ts,
-            "status": "IN_PROGRESS",
-        }
+            "target": target_account_id
+        })
+        tgt["transactions"].append({
+            "timestamp": timestamp,
+            "operation": "transfer_in",
+            "amount": amount,
+            "source": source_account_id
+        })
+        
+        return src["balance"]
 
-        # schedule cashback
-        self._cashback_schedule.setdefault(cashback_ts, []).append(payment_id)
+    def top_spenders(self, timestamp: int, n: int) -> list[str]:
+        self._process_cashbacks(timestamp)
+        
+        spenders = []
+        for acc_id, info in self.accounts.items():
+            # Skip merged accounts
+            if "merged_at" in info:
+                continue
+                
+            total_outgoing = 0
+            for tr in info["transactions"]:
+                op = tr["operation"]
+                if op == "transfer_out" or op.startswith("payment"):
+                    total_outgoing += tr["amount"]
+            
+            spenders.append((-total_outgoing, acc_id))
+            
+        spenders.sort()
+        
+        result = []
+        for i in range(min(n, len(spenders))):
+            amt = -spenders[i][0]
+            acc = spenders[i][1]
+            result.append(f"{acc}({amt})")
+            
+        return result
 
+    def pay(self, timestamp: int, account_id: str, amount: int) -> str | None:
+        self._process_cashbacks(timestamp)
+        
+        if account_id not in self.accounts:
+            return None
+            
+        acc = self.accounts[account_id]
+        if "merged_at" in acc:
+            return None
+            
+        if acc["balance"] < amount:
+            return None
+        
+        payment_id = f"payment{self.payment_counter}"
+        self.payment_counter += 1
+        
+        acc["balance"] -= amount
+        
+        acc["transactions"].append({
+            "timestamp": timestamp,
+            "operation": payment_id,
+            "amount": amount
+        })
+        
+        cashback_amt = int(amount * 0.02)
+        acc["transactions"].append({
+            "timestamp": timestamp + self.MILLISECONDS_IN_1_DAY,
+            "operation": "cashback",
+            "amount": cashback_amt,
+            "related_payment": payment_id,
+            "deposited": False
+        })
+        
         return payment_id
 
-     def get_payment_status(self, timestamp: int, account_id: str, payment: str) -> str | None:
+    def get_payment_status(self, timestamp: int, account_id: str, payment: str) -> str | None:
         self._process_cashbacks(timestamp)
-
-        if account_id not in self._balances:
+        
+        if account_id not in self.accounts:
             return None
-
-        info = self._payments.get(payment)
-        if info is None:
+            
+        acc = self.accounts[account_id]
+        if "merged_at" in acc:
             return None
-        if info["account_id"] != account_id:
+        
+        # Check transaction history
+        payment_found = False
+        cashback_deposited = False
+        
+        for tr in acc["transactions"]:
+            if tr["operation"] == payment:
+                payment_found = True
+            if (tr["operation"] == "cashback" and 
+                tr.get("related_payment") == payment and 
+                tr["deposited"]):
+                cashback_deposited = True
+                
+        if not payment_found:
             return None
+            
+        return "CASHBACK_RECEIVED" if cashback_deposited else "IN_PROGRESS"
 
-        return info["status"]
+    def merge_accounts(self, timestamp: int, account_id_1: str, account_id_2: str) -> bool:
+        self._process_cashbacks(timestamp)
+        
+        if account_id_1 == account_id_2:
+            return False
+        
+        if account_id_1 not in self.accounts or account_id_2 not in self.accounts:
+            return False
+            
+        acc1 = self.accounts[account_id_1]
+        acc2 = self.accounts[account_id_2]
+        
+        # Cannot merge if either is already merged
+        if "merged_at" in acc1 or "merged_at" in acc2:
+            return False
+        
+        # 1. Transfer Balance
+        acc1["balance"] += acc2["balance"]
+        
+        # 2. Transfer Transactions (Copy and Tag)
+        # We COPY them so acc2 retains its original history for historical queries,
+        # but acc1 gets the data for future queries.
+        for tr in acc2["transactions"]:
+            # Shallow copy is enough as dicts inside are simple
+            new_tr = tr.copy()
+            new_tr["merged_from"] = account_id_2
+            new_tr["merged_at"] = timestamp
+            acc1["transactions"].append(new_tr)
+            
+        # 3. Soft Delete Account 2
+        acc2["merged_at"] = timestamp
+        
+        return True
+
+    def get_balance(self, timestamp: int, account_id: str, time_at: int) -> int | None:
+        self._process_cashbacks(timestamp)
+        
+        if account_id not in self.accounts:
+            return None
+            
+        acc = self.accounts[account_id]
+        
+        # 1. Check if account existed at time_at
+        if acc["creation_time"] > time_at:
+            return None
+            
+        # 2. Check merge status relative to time_at
+        # If the account is merged, AND the query is for a time AFTER the merge,
+        # then the account "doesn't exist" (it's gone).
+        if "merged_at" in acc:
+            if time_at >= acc["merged_at"]:
+                return None
+        
+        # 3. Calculate Balance
+        balance = 0
+        for tr in acc["transactions"]:
+            # Skip future transactions
+            if tr["timestamp"] > time_at:
+                continue
+                
+            # Filter Merged Transactions
+            # If this transaction came from a merge, we only count it 
+            # if the merge happened BEFORE (or at) the query time.
+            if "merged_at" in tr:
+                if tr["merged_at"] > time_at:
+                    continue
+            
+            op = tr["operation"]
+            amt = tr["amount"]
+            
+            if op == "deposit":
+                balance += amt
+            elif op == "transfer_in":
+                balance += amt
+            elif op == "transfer_out":
+                balance -= amt
+            elif op.startswith("payment"):
+                balance -= amt
+            elif op == "cashback":
+                balance += amt
+                
+        return balance
