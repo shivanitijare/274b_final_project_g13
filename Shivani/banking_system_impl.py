@@ -9,12 +9,12 @@ class BankingSystemImpl(BankingSystem):
         #    "creation_time": int,
         #    "merged_at": int (optional, if present, account is merged)
         # }
-        self.accounts = {}
+        self.whole_accounts = {}
         self.payment_counter = 1
         self.MILLISECONDS_IN_1_DAY = 86400000
 
     def _process_cashbacks(self, timestamp: int) -> None:
-        for acc in self.accounts.values():
+        for acc in self.whole_accounts.values():
             # Even if merged, the prompt implies cashback refunds for merged accounts 
             # should be processed but refunded to the survivor.
             # However, my merge logic moves transactions to the survivor, 
@@ -32,14 +32,14 @@ class BankingSystemImpl(BankingSystem):
                     tr["deposited"] = True
 
     def create_account(self, timestamp: int, account_id: str) -> bool:
-        if account_id in self.accounts:
+        if account_id in self.whole_accounts:
             # If account exists and is ACTIVE, fail.
-            if "merged_at" not in self.accounts[account_id]:
+            if "merged_at" not in self.whole_accounts[account_id]:
                 return False
             # If account exists but was MERGED (soft deleted), 
             # we overwrite it (effectively creating a new account with the same ID).
         
-        self.accounts[account_id] = {
+        self.whole_accounts[account_id] = {
             "balance": 0,
             "transactions": [],
             "creation_time": timestamp
@@ -49,10 +49,10 @@ class BankingSystemImpl(BankingSystem):
     def deposit(self, timestamp: int, account_id: str, amount: int) -> int | None:
         self._process_cashbacks(timestamp)
         
-        if account_id not in self.accounts:
+        if account_id not in self.whole_accounts:
             return None
         
-        acc = self.accounts[account_id]
+        acc = self.whole_accounts[account_id]
         if "merged_at" in acc:
             return None
             
@@ -67,13 +67,13 @@ class BankingSystemImpl(BankingSystem):
     def transfer(self, timestamp: int, source_account_id: str, target_account_id: str, amount: int) -> int | None:
         self._process_cashbacks(timestamp)
         
-        if (source_account_id not in self.accounts or 
-            target_account_id not in self.accounts or 
+        if (source_account_id not in self.whole_accounts or 
+            target_account_id not in self.whole_accounts or 
             source_account_id == target_account_id):
             return None
             
-        src = self.accounts[source_account_id]
-        tgt = self.accounts[target_account_id]
+        src = self.whole_accounts[source_account_id]
+        tgt = self.whole_accounts[target_account_id]
         
         # Check if either is merged
         if "merged_at" in src or "merged_at" in tgt:
@@ -104,7 +104,7 @@ class BankingSystemImpl(BankingSystem):
         self._process_cashbacks(timestamp)
         
         spenders = []
-        for acc_id, info in self.accounts.items():
+        for acc_id, info in self.whole_accounts.items():
             # Skip merged accounts
             if "merged_at" in info:
                 continue
@@ -130,10 +130,10 @@ class BankingSystemImpl(BankingSystem):
     def pay(self, timestamp: int, account_id: str, amount: int) -> str | None:
         self._process_cashbacks(timestamp)
         
-        if account_id not in self.accounts:
+        if account_id not in self.whole_accounts:
             return None
             
-        acc = self.accounts[account_id]
+        acc = self.whole_accounts[account_id]
         if "merged_at" in acc:
             return None
             
@@ -165,10 +165,10 @@ class BankingSystemImpl(BankingSystem):
     def get_payment_status(self, timestamp: int, account_id: str, payment: str) -> str | None:
         self._process_cashbacks(timestamp)
         
-        if account_id not in self.accounts:
+        if account_id not in self.whole_accounts:
             return None
             
-        acc = self.accounts[account_id]
+        acc = self.whole_accounts[account_id]
         if "merged_at" in acc:
             return None
         
@@ -195,11 +195,11 @@ class BankingSystemImpl(BankingSystem):
         if account_id_1 == account_id_2:
             return False
         
-        if account_id_1 not in self.accounts or account_id_2 not in self.accounts:
+        if account_id_1 not in self.whole_accounts or account_id_2 not in self.whole_accounts:
             return False
             
-        acc1 = self.accounts[account_id_1]
-        acc2 = self.accounts[account_id_2]
+        acc1 = self.whole_accounts[account_id_1]
+        acc2 = self.whole_accounts[account_id_2]
         
         # Cannot merge if either is already merged
         if "merged_at" in acc1 or "merged_at" in acc2:
@@ -226,10 +226,10 @@ class BankingSystemImpl(BankingSystem):
     def get_balance(self, timestamp: int, account_id: str, time_at: int) -> int | None:
         self._process_cashbacks(timestamp)
         
-        if account_id not in self.accounts:
+        if account_id not in self.whole_accounts:
             return None
             
-        acc = self.accounts[account_id]
+        acc = self.whole_accounts[account_id]
         
         # 1. Check if account existed at time_at
         if acc["creation_time"] > time_at:
