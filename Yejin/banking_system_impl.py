@@ -302,10 +302,7 @@ class BankingSystemImpl(BankingSystem):
         
         # Add account2's balance into account1
         acc1_info['balance'] += acc2_info['balance']
-        
-        # Move all transactions of account2 into account1
-        acc1_info['transactions'].extend(acc2_info['transactions'])
-        
+                
         for tx in acc2_info['transactions']:
             new_tx = tx.copy()
             new_tx['merged_at'] = timestamp
@@ -345,7 +342,7 @@ class BankingSystemImpl(BankingSystem):
         
         transactions_before_time = []
         for t in transactions:
-            if t['timestamp'] <= time_at:
+            if t['timestamp'] > time_at:
                 continue
             
             merged_at = t.get('merged_at')
@@ -367,4 +364,3 @@ class BankingSystemImpl(BankingSystem):
                 balance -= amt
                 
         return balance
-
