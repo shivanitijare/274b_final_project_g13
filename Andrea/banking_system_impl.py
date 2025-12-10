@@ -69,7 +69,7 @@ class BankingSystemImpl(BankingSystem):
                     acc = self.whole_accounts[acc_id]
                     acc["balance"] += cashback_amt
                     acc["transactions"].append({
-                        "timestamp": timestamp,
+                        "timestamp": t,
                         "operation": "cashback",
                         "amount": cashback_amt,
                         "payment_id": payment_id
@@ -86,7 +86,8 @@ class BankingSystemImpl(BankingSystem):
         
         # Initialize a new account with balance of 0 and an empty transaction list
         account_info = {'balance': 0,
-                        'transactions': []}
+                        'transactions': [],
+                        'created_at': timestamp} # add for level 4
         
         # Record the "created account" tranactionn 
         account_info['transactions'].append({'timestamp': timestamp,
@@ -278,3 +279,86 @@ class BankingSystemImpl(BankingSystem):
 
         # else cashback is still pending
         return "IN_PROGRESS"
+    
+    # level 4
+    def merge_accounts(self, timestamp: int, account_id_1: str, account_id_2: str) -> bool:
+        self.process_cashback(timestamp)
+
+        # invalid merge
+        if account_id_1 == account_id_2:
+            return False
+        if account_id_1 not in self.whole_accounts or account_id_2 not in self.whole_accounts:
+            return False
+        
+        account1 = self.whole_accounts[account_id_1]
+        account2 = self.whole_accounts[account_id_2]
+
+        # merged account inherit earliest creation time
+        created1 = account1.get('created_at', timestamp)
+        created2 = account2.get('created_at', timestamp)
+        account1['created_at'] = min(created1, created2)
+
+        #transfer balance
+        account1['balance'] += account2.get('balance', 0)
+
+        #transfer transactions
+        for i in account2['transactions']:
+            transaction_copy = i.copy()
+            transaction_copy['merged_at'] = timestamp #copy and tag
+            account1['transactions'].append(transaction_copy)
+
+        #make sure it is in chronological order
+        account1['transactions'].sort(key = lambda t: t['timestamp'])
+
+        # cashback events
+        for cb_time in list(self.cashback_events.keys()):
+            updated_events = []
+            for (acc_id, cash_amt, payment_id) in self.cashback_events[cb_time]:
+                if acc_id == account_id_2:
+                    updated_events.append((account_id_1, cash_amt, payment_id))
+                else:
+                    updated_events.append((acc_id, cash_amt, payment_id))
+            self.cashback_events[cb_time] = updated_events
+
+        # delete merged account
+        self.whole_accounts.pop(account_id_2, None)
+
+        return True
+
+    def get_balance(self, timestamp: int, account_id: str, time_at: int) -> int | None:
+        self.process_cashback(timestamp)
+
+        if account_id not in self.whole_accounts:
+            return None
+        
+        account = self.whole_accounts[account_id]
+        transactions = account['transactions']
+        
+        existed = False
+        for i in transactions:
+            if i['timestamp'] <= time_at:
+                existed = True
+                break
+        
+        #account not exist at time_at
+        if not existed:
+            return None
+
+        balance = 0
+        for i in transactions:
+            merged_at = i.get('merged_at')
+            if merged_at is not None and time_at < merged_at:
+                continue
+            
+            if i['timestamp'] > time_at:
+                continue
+
+            op = i['operation']
+            amt = i['amount']
+
+            if op in ('deposited', 'transferred in', 'cashback'):
+                balance += amt
+            elif op in ('transferred out', 'withdrawn', 'paid'):
+                balance -= amt
+        
+        return balance
